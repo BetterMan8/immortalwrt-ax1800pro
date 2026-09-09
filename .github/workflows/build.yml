@@ -21,7 +21,7 @@ jobs:
 
       - name: Clone ImmortalWRT source
         run: |
-          git clone --depth=1 --branch=openwrt-24.10 \
+          git clone --depth=1 --branch=openwrt-25.12 \
             https://github.com/immortalwrt/immortalwrt.git openwrt
 
       - name: Update feeds
@@ -32,7 +32,6 @@ jobs:
 
       - name: Apply custom config
         run: |
-          # 自动将你仓库根目录的 .config 复制到源码目录
           cp .config openwrt/.config
           cd openwrt
           make defconfig
