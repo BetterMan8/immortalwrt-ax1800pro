@@ -1,0 +1,67 @@
+name: Build ImmortalWRT for AX1800 Pro
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
+          gettext git java-propose-classpath libelf-dev libncurses5-dev \
+          libncursesw5-dev libssl-dev python3 python3-dev python3-pip python3-pyelftools \
+          rsync subversion swig time xsltproc zlib1g-dev unzip libzstd-dev \
+          liblzma-dev liblz4-dev aria2 jq
+
+      - name: Clone ImmortalWRT source
+        run: |
+          git clone --depth=1 --branch=openwrt-24.10 \
+            https://github.com/immortalwrt/immortalwrt.git openwrt
+
+      - name: Update feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Load custom configuration
+        run: |
+          cp $GITHUB_WORKSPACE/seed.config ./openwrt/.config
+          cd openwrt
+          make defconfig
+
+      - name: Download source & packages
+        working-directory: openwrt
+        run: |
+          make download -j$(nproc)
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile firmware
+        working-directory: openwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Organize firmware & config
+        run: |
+          mkdir -p ./artifact/firmware
+          cp ./openwrt/.config ./artifact/seed_backup.config
+          find ./openwrt/bin/targets -type f -name "*.bin" -exec cp {} ./artifact/firmware/ \;
+          find ./openwrt/bin/targets -type f -name "*.sysupgrade*" -exec cp {} ./artifact/firmware/ \;
+          find ./openwrt/bin/targets -type f -name "*.factory*" -exec cp {} ./artifact/firmware/ \;
+          find ./openwrt/bin/packages -type f -name "*.apk" -exec cp {} ./artifact/firmware/ \;
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWRT_AX1800Pro_Firmware
+          path: ./artifact/*
+          if-no-files-found: error
