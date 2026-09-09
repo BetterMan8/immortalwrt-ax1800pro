@@ -45,5 +45,8 @@ jobs:
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWRT-AX1800-Pro-Firmware
-          path: openwrt/bin/targets/*/*/
+          name: ImmortalWRT-AX1800-Pro
+          # 只提取 bin 和 itb 格式的固件文件，过滤掉其他杂项
+          path: |
+            openwrt/bin/targets/*/*/*.bin
+            openwrt/bin/targets/*/*/*.itb
