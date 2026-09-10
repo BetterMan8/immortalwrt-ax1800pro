@@ -14,7 +14,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1. 设置 UTC+8 / 北京时间日期
       - name: Set compile date
         run: |
           echo "BUILD_DATE=$(TZ='Asia/Shanghai' date +'%Y%m%d')" >> $GITHUB_ENV
@@ -38,7 +37,6 @@ jobs:
           git config --global safe.directory '*'
           git clone --depth=1 --branch openwrt-25.12 https://github.com/immortalwrt/immortalwrt.git openwrt
 
-      # 2. 缓存 openwrt/dl 源码包（跳过重复下载）
       - name: Cache OpenWrt dl
         uses: actions/cache@v4
         with:
@@ -47,7 +45,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-
 
-      # 3. 缓存 CCACHE（极大地加速二次编译）
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -62,8 +59,9 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 4. 严谨应用并补全 .config
       - name: Apply and enforce custom config
+        env:
+          TERM: xterm-256color
         run: |
           if [ -f .config ]; then
             cp .config openwrt/.config
@@ -71,13 +69,15 @@ jobs:
             cp config.txt openwrt/.config
           elif [ -f "config (1).txt" ]; then
             cp "config (1).txt" openwrt/.config
+          else
+            touch openwrt/.config
           fi
 
           cd openwrt
-          # 彻底清除所有 target 相关的旧配置，防止冲突
-          sed -i '/CONFIG_TARGET_/d' .config
+          # 彻底清除可能导致冲突的旧 target 标记
+          sed -i '/CONFIG_TARGET_qualcommax/d' .config
           
-          # 强制写入京东云亚瑟 RE-SS-01 Target
+          # 强制锁定京东云亚瑟 RE-SS-01 (AX1800 Pro) 目标设备与编译加速选项
           cat <<EOF >> .config
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
@@ -86,9 +86,9 @@ jobs:
           CONFIG_CCACHE=y
           EOF
 
-          make olddefconfig
+          # 使用纯命令行模式自动补全与修复配置，绝对不触发图形化 menuconfig
+          make defconfig
 
-      # 5. 校验目标设备，若不符合直接熔断
       - name: Verify selected target device
         run: |
           cd openwrt
@@ -106,23 +106,22 @@ jobs:
           echo -e "$(nproc) thread compile"
           make -j$(nproc) || make -j1 V=s
 
-      # 6. 提取固件、校验大小并规范命名
       - name: Organize firmware files
         run: |
           mkdir -p firmware_output
 
-          # 提取 sysupgrade.bin，并复制一份作为 FACTORY.bin 供 chenxin527 U-Boot 刷入
+          # 提取 sysupgrade.bin，并同步生成 FACTORY.bin 格式供 chenxin527 U-Boot Web 界面刷入
           find openwrt/bin/targets/ -type f -name "*sysupgrade.bin" | while read file; do
             cp -f "$file" "firmware_output/JDCLOUD_RE-SS-01-SQUASHFS-FACTORY-${BUILD_DATE}.bin"
             cp -f "$file" "firmware_output/JDCLOUD_RE-SS-01-SQUASHFS-SYSUPGRADE-${BUILD_DATE}.bin"
           done
 
-          # 检查导出的文件是否存在且大于 15MB，确保固件完整
+          # 校验生成的固件体积，若低于 15MB 则判定编译异常
           for bin in firmware_output/*.bin; do
             if [ -f "$bin" ]; then
               size=$(stat -c%s "$bin")
               if [ $size -lt 15728640 ]; then
-                echo "错误：固件 $bin 体积异常小 ($size bytes)！"
+                echo "错误：固件 $bin 体积异常 ($size bytes)！"
                 exit 1
               fi
             else
