@@ -1,4 +1,4 @@
-name: Build ImmortalWRT for AX1800 Pro (chenxin527 U-Boot)
+name: Build ImmortalWRT for AX1800 Pro
 
 on:
   workflow_dispatch:
