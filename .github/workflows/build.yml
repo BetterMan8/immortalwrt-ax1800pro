@@ -7,7 +7,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE20: true
       CCACHE_DIR: /home/runner/.ccache
 
     steps:
@@ -75,9 +74,9 @@ jobs:
 
           cd openwrt
           # 彻底清除可能导致冲突的旧 target 标记
-          sed -i '/CONFIG_TARGET_qualcommax/d' .config
+          sed -i '/CONFIG_TARGET_/d' .config
           
-          # 强制锁定京东云亚瑟 RE-SS-01 (AX1800 Pro) 目标设备与编译加速选项
+          # 强制写入 ImmortalWrt 官方 qualcommax 架构下对 AX1800 Pro (re-ss-01) 的正确设备宏
           cat <<EOF >> .config
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
@@ -86,14 +85,14 @@ jobs:
           CONFIG_CCACHE=y
           EOF
 
-          # 使用纯命令行模式自动补全与修复配置，绝对不触发图形化 menuconfig
+          # 使用非交互模式补充完整依赖项，避免触发图形界面报错
           make defconfig
 
       - name: Verify selected target device
         run: |
           cd openwrt
           echo "=== 校验目标设备配置 ==="
-          grep "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" .config || (echo "错误：Target 配置未正确生效！" && exit 1)
+          grep -E "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y|CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" .config || (echo "错误：Target 配置未正确生效！" && exit 1)
 
       - name: Download package source codes
         run: |
