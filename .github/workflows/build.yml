@@ -1,4 +1,4 @@
-name: Build ImmortalWRT for AX1800 Pro
+name: Build ImmortalWRT for AX1800 Pro (chenxin527 U-Boot)
 
 on:
   workflow_dispatch:
@@ -6,9 +6,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE20: true
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set compile date
+        run: |
+          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo apt-get clean
 
       - name: Install dependencies
         run: |
@@ -21,32 +33,70 @@ jobs:
 
       - name: Clone ImmortalWRT source
         run: |
-          git clone --depth=1 --branch=openwrt-25.12 \
-            https://github.com/immortalwrt/immortalwrt.git openwrt
+          git clone --depth=1 --branch openwrt-25.12 https://github.com/immortalwrt/immortalwrt.git openwrt
 
-      - name: Update feeds
+      - name: Update and install feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Apply custom config
+      - name: Speedup downloads using CDN/Mirrors
         run: |
-          cp .config openwrt/.config
           cd openwrt
-          make defconfig
+          mkdir -p dl
+          echo 'src/gz custom_mirror https://mirrors.ustc.edu.cn/openwrt/sources' >> feeds.conf.default
 
-      - name: Compile firmware
+      - name: Apply and enforce custom config
+        run: |
+          if [ -f .config ]; then
+            cp .config openwrt/.config
+          elif [ -f config.txt ]; then
+            cp config.txt openwrt/.config
+          elif [ -f "config (1).txt" ]; then
+            cp "config (1).txt" openwrt/.config
+          fi
+
+          cd openwrt
+          # 强制锁定 Target 为 JDCloud RE-SS-01，防止变回 8devices_mango-dvk
+          sed -i '/CONFIG_TARGET_qualcommax/d' .config
+          echo "CONFIG_TARGET_qualcommax=y" >> .config
+          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+          echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" >> .config
+          echo "# CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_8devices_mango-dvk is not set" >> .config
+
+          make olddefconfig
+
+      - name: Verify selected target device
+        run: |
+          cd openwrt
+          echo "=== 校验目标设备 ==="
+          grep "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" .config || (echo "错误：目标设备配置缺失！" && exit 1)
+
+      - name: Download package source codes
         run: |
           cd openwrt
           make -j$(nproc) download
-          make -j$(nproc)
+
+      - name: Compile the firmware
+        run: |
+          cd openwrt
+          echo -e "$(nproc) thread compile"
+          make -j$(nproc) || make -j1 V=s
+
+      # 专门针对 chenxin527 QSDK 12.5 U-Boot 导出 factory.bin 文件
+      - name: Organize firmware files
+        run: |
+          mkdir -p firmware_output
+
+          # 提取 sysupgrade.bin，并同步生成 FACTORY.bin 格式供 U-Boot Web 界面刷入
+          find openwrt/bin/targets/ -type f -name "*sysupgrade.bin" | while read file; do
+            cp -f "$file" "firmware_output/JDCLOUD_RE-SS-01-SQUASHFS-FACTORY-${BUILD_DATE}.bin"
+            cp -f "$file" "firmware_output/JDCLOUD_RE-SS-01-SQUASHFS-SYSUPGRADE-${BUILD_DATE}.bin"
+          done
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWRT-AX1800-Pro
-          # 只提取 bin 和 itb 格式的固件文件，过滤掉其他杂项
-          path: |
-            openwrt/bin/targets/*/*/*.bin
-            openwrt/bin/targets/*/*/*.itb
+          name: ImmortalWRT-AX1800-Pro-${{ env.BUILD_DATE }}
+          path: firmware_output/*.bin
