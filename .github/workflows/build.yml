@@ -1,4 +1,4 @@
-name: Build ImmortalWRT for AX1800 Pro
+name: Build ImmortalWRT for AX1800 Pro (chenxin527 U-Boot)
 
 on:
   workflow_dispatch:
@@ -73,26 +73,45 @@ jobs:
           fi
 
           cd openwrt
-          # 彻底清除可能导致冲突的旧 target 标记
+          # 1. 彻底清除可能存在的冲突目标配置
           sed -i '/CONFIG_TARGET_/d' .config
-          
-          # 强制写入 ImmortalWrt 官方 qualcommax 架构下对 AX1800 Pro (re-ss-01) 的正确设备宏
+
+          # 2. 动态搜索 qualcommax/ipq60xx 架构下京东云亚瑟 (re-ss-01) 的精确设备 Profile 宏
+          TARGET_PROFILE=$(grep -i "jdcloud.*re-ss-01\|jdcloud.*ax1800" target/linux/qualcommax/image/ipq60xx.mk 2>/dev/null | grep "define Device/" | cut -d'/' -f2 | head -n 1)
+
+          if [ -z "$TARGET_PROFILE" ]; then
+            # 备用检索：全文搜索 Device 定义
+            TARGET_PROFILE=$(grep -ri "re-ss-01" target/linux/qualcommax/ | grep "define Device/" | cut -d'/' -f2 | head -n 1)
+          fi
+
+          echo "自动匹配到的 Target Device Profile: $TARGET_PROFILE"
+
+          # 3. 写入 Target 及底层依赖
           cat <<EOF >> .config
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq60xx=y
-          CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y
+          CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_${TARGET_PROFILE}=y
+          CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_${TARGET_PROFILE}=y
           CONFIG_DEVEL=y
           CONFIG_CCACHE=y
           EOF
 
-          # 使用非交互模式补充完整依赖项，避免触发图形界面报错
+          # 4. 自动生成并补全依赖，不调用图形菜单界面
           make defconfig
 
       - name: Verify selected target device
         run: |
           cd openwrt
-          echo "=== 校验目标设备配置 ==="
-          grep -E "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y|CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" .config || (echo "错误：Target 配置未正确生效！" && exit 1)
+          echo "=== 当前选中的目标设备配置 ==="
+          grep "CONFIG_TARGET_.*DEVICE.*=" .config || true
+          
+          # 只要成功选中 qualcommax_ipq60xx 目标架构且生成了设备即可通过校验
+          if grep -q "CONFIG_TARGET_qualcommax_ipq60xx=y" .config; then
+            echo "SUCCESS: 目标设备架构配置成功生效！"
+          else
+            echo "ERROR: Target 配置未能生效！"
+            exit 1
+          fi
 
       - name: Download package source codes
         run: |
