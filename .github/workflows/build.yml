@@ -1,4 +1,4 @@
-name: Build ImmortalWRT for AX1800 Pro
+name: Build ImmortalWRT for AX1800 Pro (chenxin527 U-Boot)
 
 on:
   workflow_dispatch:
@@ -8,14 +8,16 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE20: true
+      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 1. 设置 UTC+8 / 北京时间日期
       - name: Set compile date
         run: |
-          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(TZ='Asia/Shanghai' date +'%Y%m%d')" >> $GITHUB_ENV
 
       - name: Free disk space
         run: |
@@ -33,7 +35,26 @@ jobs:
 
       - name: Clone ImmortalWRT source
         run: |
+          git config --global safe.directory '*'
           git clone --depth=1 --branch openwrt-25.12 https://github.com/immortalwrt/immortalwrt.git openwrt
+
+      # 2. 缓存 openwrt/dl 源码包（跳过重复下载）
+      - name: Cache OpenWrt dl
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('openwrt/include/kernel-*') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-dl-
+
+      # 3. 缓存 CCACHE（极大地加速二次编译）
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ${{ runner.os }}-openwrt-ccache-${{ hashFiles('openwrt/.config') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-ccache-
 
       - name: Update and install feeds
         run: |
@@ -41,12 +62,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Speedup downloads using CDN/Mirrors
-        run: |
-          cd openwrt
-          mkdir -p dl
-          echo 'src/gz custom_mirror https://mirrors.ustc.edu.cn/openwrt/sources' >> feeds.conf.default
-
+      # 4. 严谨应用并补全 .config
       - name: Apply and enforce custom config
         run: |
           if [ -f .config ]; then
@@ -58,25 +74,31 @@ jobs:
           fi
 
           cd openwrt
-          # 强制锁定 Target 为 JDCloud RE-SS-01，防止变回 8devices_mango-dvk
-          sed -i '/CONFIG_TARGET_qualcommax/d' .config
-          echo "CONFIG_TARGET_qualcommax=y" >> .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" >> .config
-          echo "# CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_8devices_mango-dvk is not set" >> .config
+          # 彻底清除所有 target 相关的旧配置，防止冲突
+          sed -i '/CONFIG_TARGET_/d' .config
+          
+          # 强制写入京东云亚瑟 RE-SS-01 Target
+          cat <<EOF >> .config
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq60xx=y
+          CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y
+          CONFIG_DEVEL=y
+          CONFIG_CCACHE=y
+          EOF
 
           make olddefconfig
 
+      # 5. 校验目标设备，若不符合直接熔断
       - name: Verify selected target device
         run: |
           cd openwrt
-          echo "=== 校验目标设备 ==="
-          grep "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" .config || (echo "错误：目标设备配置缺失！" && exit 1)
+          echo "=== 校验目标设备配置 ==="
+          grep "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" .config || (echo "错误：Target 配置未正确生效！" && exit 1)
 
       - name: Download package source codes
         run: |
           cd openwrt
-          make -j$(nproc) download
+          make download -j$(nproc)
 
       - name: Compile the firmware
         run: |
@@ -84,15 +106,29 @@ jobs:
           echo -e "$(nproc) thread compile"
           make -j$(nproc) || make -j1 V=s
 
-      # 专门针对 chenxin527 QSDK 12.5 U-Boot 导出 factory.bin 文件
+      # 6. 提取固件、校验大小并规范命名
       - name: Organize firmware files
         run: |
           mkdir -p firmware_output
 
-          # 提取 sysupgrade.bin，并同步生成 FACTORY.bin 格式供 U-Boot Web 界面刷入
+          # 提取 sysupgrade.bin，并复制一份作为 FACTORY.bin 供 chenxin527 U-Boot 刷入
           find openwrt/bin/targets/ -type f -name "*sysupgrade.bin" | while read file; do
             cp -f "$file" "firmware_output/JDCLOUD_RE-SS-01-SQUASHFS-FACTORY-${BUILD_DATE}.bin"
             cp -f "$file" "firmware_output/JDCLOUD_RE-SS-01-SQUASHFS-SYSUPGRADE-${BUILD_DATE}.bin"
+          done
+
+          # 检查导出的文件是否存在且大于 15MB，确保固件完整
+          for bin in firmware_output/*.bin; do
+            if [ -f "$bin" ]; then
+              size=$(stat -c%s "$bin")
+              if [ $size -lt 15728640 ]; then
+                echo "错误：固件 $bin 体积异常小 ($size bytes)！"
+                exit 1
+              fi
+            else
+              echo "错误：未找到生成的 .bin 固件！"
+              exit 1
+            fi
           done
 
       - name: Upload firmware artifact
